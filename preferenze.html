@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Turni — Preferenze</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app-layout">
+  <div id="sidebar-mount"></div>
+  <main class="main-area" id="main"></main>
+</div>
+<!-- App core (classic script, defines globals) -->
+<script src="app.js"></script>
+<!-- Firebase (ES module, imports SDK v12 and exports to window.*) -->
+<script type="module" src="firebase.js"></script>
+<script>
+const user = requireAuth();
+if(!user) throw 0;
+document.getElementById('sidebar-mount').innerHTML = buildSidebar('preferenze', user);
+const isOwner = user.role==='owner';
+let prefCalOff = 0;
+
+function isoDate(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+function fmtIso(s){ const p=s.split('-'); return `${p[2]}/${p[1]}`; }
+
+function render(){
+  const now=new Date();
+  const m1=new Date(now.getFullYear(), now.getMonth()+prefCalOff, 1);
+  const m2=new Date(m1.getFullYear(), m1.getMonth()+1, 1);
+
+  let h=`<div class="page-title">Preferenze giorni liberi</div>`;
+
+  if(!isOwner){
+    const myUid=user.uid;
+    const pref=prefsStore[myUid]||{dates:[],note:''};
+    const selDates=new Set(pref.dates||[]);
+    h+=`<div class="page-sub">Seleziona nel calendario i giorni (lun–ven) in cui preferiresti essere libero.</div>
+    <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1rem;flex-wrap:wrap">
+      <button class="btn btn-ghost btn-sm" onclick="calPrev()">← Mese prec.</button>
+      <span style="font-size:0.85rem;font-weight:600">${MONTHS_IT[m1.getMonth()]} ${m1.getFullYear()} — ${MONTHS_IT[m2.getMonth()]} ${m2.getFullYear()}</span>
+      <button class="btn btn-ghost btn-sm" onclick="calNext()">Mese succ. →</button>
+    </div>
+    <div class="cal-grid" style="margin-bottom:1rem">`;
+
+    [[m1.getFullYear(),m1.getMonth()],[m2.getFullYear(),m2.getMonth()]].forEach(([y,m])=>{
+      const todayD=new Date(); todayD.setHours(0,0,0,0);
+      h+=buildCalMonth(y, m, (dt,dow7,iso,isToday)=>{
+        const isWknd=dow7===0||dow7===6;
+        const isPast=dt<todayD;
+        const isSel=selDates.has(iso);
+        if(isWknd) return{cls:'weekend',content:dt.getDate()};
+        if(isPast) return{cls:'past',content:dt.getDate()};
+        if(isToday) return{cls:'today-cal clickable'+(isSel?' selected-pref':''),onclick:`toggleDate('${iso}')`,content:dt.getDate()};
+        return{cls:'clickable'+(isSel?' selected-pref':''),onclick:`toggleDate('${iso}')`,title:isSel?'Deseleziona':'Seleziona',content:dt.getDate()};
+      });
+    });
+
+    h+=`</div>
+    <div class="card" style="max-width:520px">
+      <div class="card-title">Note <span style="font-weight:400;opacity:0.6">(opzionale)</span></div>
+      <textarea id="pref-note" style="width:100%;background:var(--surface2);border:1.5px solid var(--border);border-radius:var(--r-xs);padding:0.6rem 0.85rem;font-family:var(--fig);font-size:0.85rem;color:var(--text);outline:none;resize:vertical;min-height:70px;" placeholder="Es: porto i figli a scuola il lunedì...">${pref.note||''}</textarea>
+      <div style="display:flex;align-items:center;gap:1rem;margin-top:0.85rem">
+        <button class="btn btn-dark" onclick="savePrefs2()">Salva preferenze</button>
+        <span style="font-size:0.78rem;color:var(--text3)">${selDates.size} giorno/i selezionato/i</span>
+        ${selDates.size?`<button class="btn btn-ghost btn-sm" onclick="clearPref()">Cancella tutto</button>`:''}
+      </div>
+      <div id="pref-notice" style="margin-top:0.75rem;display:none"></div>
+    </div>`;
+  } else {
+    h+=`<div class="notice notice-warn"><div class="notice-dot"></div>Preferenze espresse dai dipendenti.</div>
+    <div class="card"><div class="card-title">Preferenze dipendenti</div>
+      <table class="owner-stat-table"><thead><tr><th>Dipendente</th><th>Date preferite</th><th>Note</th></tr></thead><tbody>`;
+    const todayStr=isoDate(new Date());
+    EMPLOYEES.forEach(emp=>{
+      const euid=EMP_TO_UID[emp];
+      const pref=prefsStore[euid]||{dates:[],note:''};
+      const fut=(pref.dates||[]).filter(d=>d>=todayStr).sort().slice(0,8);
+      h+=`<tr><td style="font-weight:600">${emp}</td>
+        <td>${fut.length?fut.map(d=>`<span class="req-status accepted" style="margin:1px 2px;display:inline-block">${fmtIso(d)}</span>`).join(''):'<span style="color:var(--text3);font-size:0.78rem">—</span>'}</td>
+        <td style="color:var(--text2);font-size:0.78rem">${pref.note||'—'}</td></tr>`;
+    });
+    h+=`</tbody></table></div>`;
+  }
+
+  document.getElementById('main').innerHTML=h;
+}
+
+window.calPrev=()=>{ prefCalOff--; render(); };
+window.calNext=()=>{ prefCalOff++; render(); };
+window.toggleDate=function(iso){
+  const myUid=user.uid;
+  if(!prefsStore[myUid]) prefsStore[myUid]={dates:[],note:''};
+  const dates=prefsStore[myUid].dates||[];
+  const idx=dates.indexOf(iso);
+  if(idx>=0) dates.splice(idx,1); else dates.push(iso);
+  prefsStore[myUid].dates=dates;
+  savePrefs(); if(_fbReady) fbSavePref(myUid, prefsStore[myUid]).catch(console.error); render();
+};
+window.savePrefs2=function(){
+  const myUid=user.uid;
+  const note=document.getElementById('pref-note')?.value||'';
+  if(!prefsStore[myUid]) prefsStore[myUid]={dates:[],note:''};
+  prefsStore[myUid].note=note; savePrefs(); if(_fbReady) fbSavePref(myUid, prefsStore[myUid]).then(()=>showFbSuccess()).catch(console.error);
+  const n=document.getElementById('pref-notice');
+  if(n){n.style.display='block';n.className='notice notice-ok';n.innerHTML='<div class="notice-dot"></div>Salvato.';}
+  setTimeout(()=>{if(n)n.style.display='none';},3000);
+};
+window.clearPref=function(){
+  if(prefsStore[user.uid]) prefsStore[user.uid].dates=[];
+  savePrefs(); render();
+};
+
+window.addEventListener('fb-ready', function() {
+  fbInit(()=>{ markFbReady(); render(); });
+}, { once: true });
+</script>
+</body>
+</html>

@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Turni — Cambi Turno</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app-layout">
+  <div id="sidebar-mount"></div>
+  <main class="main-area" id="main"></main>
+</div>
+<!-- App core (classic script, defines globals) -->
+<script src="app.js"></script>
+<!-- Firebase (ES module, imports SDK v12 and exports to window.*) -->
+<script type="module" src="firebase.js"></script>
+<script>
+const user = requireAuth();
+if(!user) throw 0;
+document.getElementById('sidebar-mount').innerHTML = buildSidebar('cambi', user);
+const isOwner = user.role==='owner';
+const myEmp = isOwner ? null : UID_TO_EMP[user.uid];
+
+let tab='new', swapWeekOff=0;
+let giveDay=null, giveShift=null, wantDay=null, wantShift=null, wantEmp=null;
+
+function reset(){ giveDay=null;giveShift=null;wantDay=null;wantShift=null;wantEmp=null; }
+
+function render(){
+  if(isOwner){ renderOwner(); return; }
+  const sentCount=swapStore.filter(r=>r.fromUid===user.uid).length;
+  const recCount=swapStore.filter(r=>r.targetColleagues?.includes(myEmp)&&r.responses?.[myEmp]==='pending'&&r.status==='pending').length;
+  let h=`<div class="page-title">Cambi Turno</div>
+  <div class="page-sub">Scambia il tuo turno con quello di un collega</div>
+  <div class="sec-tabs">
+    <button class="sec-tab ${tab==='new'?'active':''}" onclick="setTab('new')">Nuova richiesta</button>
+    <button class="sec-tab ${tab==='sent'?'active':''}" onclick="setTab('sent')">Inviate (${sentCount})</button>
+    <button class="sec-tab ${tab==='received'?'active':''}" onclick="setTab('received')">Da rispondere <span style="background:var(--red);color:#fff;border-radius:99px;font-size:0.6rem;padding:0.1rem 0.4rem;margin-left:4px">${recCount}</span></button>
+  </div>`;
+  if(tab==='new') h+=renderTable();
+  else if(tab==='sent') h+=renderSent();
+  else h+=renderReceived();
+  document.getElementById('main').innerHTML=h;
+  attachWeekNav(()=>swapWeekOff,v=>{swapWeekOff=v;reset();render();},render);
+}
+window.setTab=t=>{ tab=t; render(); };
+
+function renderTable(){
+  const res=getOrGen(swapWeekOff);
+  const ws=weekStart(swapWeekOff);
+  let h=`<div class="card">
+  <div class="card-title">Seleziona i turni da scambiare</div>
+  <p style="font-size:0.8rem;color:var(--text2);margin-bottom:0.85rem">
+    <span style="display:inline-block;width:11px;height:11px;background:var(--green);border-radius:3px;vertical-align:middle;margin-right:3px"></span>Verde = turno che cedi &nbsp;·&nbsp;
+    <span style="display:inline-block;width:11px;height:11px;background:var(--red);border-radius:3px;vertical-align:middle;margin-right:3px"></span>Rosso = turno che prendi
+  </p>
+  <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">
+    ${weekNavHtml()}
+    <div style="font-size:0.78rem;color:var(--text2)">
+      Cedi: <strong style="color:${giveDay!==null?'var(--green)':'var(--text3)'}">${giveDay!==null?DAYS[giveDay]+' '+SN[giveShift]:'—'}</strong>
+      &nbsp;↔&nbsp;
+      Prendi: <strong style="color:${wantDay!==null?'var(--red)':'var(--text3)'}">${wantDay!==null?DAYS[wantDay]+' '+SN[wantShift]+' ('+wantEmp+')':'—'}</strong>
+    </div>
+  </div>`;
+
+  if(!res.schedule){
+    h+=`<div class="notice notice-warn"><div class="notice-dot"></div>Nessun turno generato.</div></div>`;
+    return h;
+  }
+  h+=`<div class="table-wrap"><table><thead><tr><th>Dipendente</th>`;
+  for(let d=0;d<7;d++){const dt=new Date(ws);dt.setDate(ws.getDate()+d);h+=`<th class="${d===5?'cs':d===6?'cd':''}">${DAYS[d]}<br><span style="font-size:0.55rem;opacity:0.6">${fmt2(dt)}</span></th>`;}
+  h+=`</tr></thead><tbody>`;
+
+  EMPLOYEES.forEach(emp=>{
+    const isMe=emp===myEmp;
+    h+=`<tr class="${isMe?'me-row':''}"><td>${emp}${isMe?' <span style="font-size:0.62rem;color:var(--green);font-weight:700">← tu</span>':''}</td>`;
+    for(let d=0;d<7;d++){
+      const code=res.schedule[emp][d];
+      let cls=pillCls(code,d), extra='', oc='';
+      if(isMe&&code!=='O'){
+        if(giveDay===d){ cls+=' pill-sel-give'; }
+        else{ extra='pill-edit'; oc=`onclick="selGive(${d},'${code}')" title="Cedi questo turno"`; }
+      } else if(!isMe&&code!=='O'&&giveDay!==null){
+        if(wantDay===d&&wantEmp===emp){ cls+=' pill-sel-want'; }
+        else{ extra='pill-available'; oc=`onclick="selWant(${d},'${code}','${emp}')" title="Prendi questo turno"`; }
+      }
+      h+=`<td><span class="${cls} ${extra}" ${oc}>${pillShort(code)}<br><span style="font-size:0.52rem;opacity:0.7">${SL[code]||''}</span></span></td>`;
+    }
+    h+=`</tr>`;
+  });
+  h+=`</tbody></table></div>`;
+
+  if(giveDay!==null&&wantDay!==null){
+    const canSend=EMPLOYEES.filter(e=>e!==myEmp&&res.schedule[e][wantDay]===wantShift);
+    h+=`<div style="margin-top:1rem;padding:1rem;background:var(--surface2);border-radius:var(--r-xs)">
+      <div class="form-row">
+        <div class="form-field">
+          <label>Motivazione <span style="font-weight:400;opacity:0.6">(opzionale)</span></label>
+          <input type="text" id="sw-note" placeholder="Es: impegno familiare...">
+        </div>
+      </div>
+      <div style="display:flex;gap:0.5rem">
+        <button class="btn btn-dark" onclick="submitSwap('${myEmp}')">Invia richiesta</button>
+        <button class="btn btn-ghost btn-sm" onclick="reset();render()">Azzera</button>
+      </div>
+      <div style="font-size:0.72rem;color:var(--text3);margin-top:0.5rem">La richiesta andrà a tutti i colleghi con quel turno.</div>
+    </div>`;
+  } else {
+    h+=`<p style="font-size:0.78rem;color:var(--text3);margin-top:0.85rem">${giveDay===null?'1. Clicca il tuo turno (verde) da cedere.':'2. Clicca il turno di un collega (rosso) che vuoi prendere.'}</p>`;
+  }
+  h+=`</div>`;
+  return h;
+}
+
+window.selGive=function(d,code){ giveDay=d;giveShift=code;wantDay=null;wantShift=null;wantEmp=null;render(); };
+window.selWant=function(d,code,emp){ wantDay=d;wantShift=code;wantEmp=emp;render(); };
+
+window.submitSwap=function(myEmp){
+  const res=getOrGen(swapWeekOff);
+  if(!res.schedule||giveDay===null||wantDay===null) return;
+  const note=document.getElementById('sw-note')?.value||'';
+  const targets=EMPLOYEES.filter(e=>e!==myEmp&&res.schedule[e][wantDay]===wantShift);
+  if(!targets.length){alert('Nessun collega disponibile.');return;}
+  const responses={}; targets.forEach(e=>{responses[e]='pending';});
+  swapStore.unshift({
+    id:genId(),fromUid:user.uid,fromEmp:myEmp,
+    fromShift:giveShift,fromDay:giveDay,
+    wantShift,wantDay,
+    weekOffset:swapWeekOff,weekKeyStr:weekKey(swapWeekOff),
+    targetColleagues:targets,responses,
+    status:'pending',winner:null,note,createdAt:new Date().toISOString()
+  });
+  saveSwaps(); if(_fbReady) fbSaveSwap(swapStore[0]).catch(console.error); reset(); tab='sent'; render();
+};
+
+function renderSent(){
+  const mine=swapStore.filter(r=>r.fromUid===user.uid);
+  if(!mine.length) return`<div style="color:var(--text3);font-size:0.85rem;padding:1rem 0">Nessuna richiesta inviata.</div>`;
+  return mine.map(r=>{
+    const ws=weekStart(r.weekOffset);
+    const dtF=new Date(ws);dtF.setDate(ws.getDate()+r.fromDay);
+    const dtW=new Date(ws);dtW.setDate(ws.getDate()+r.wantDay);
+    const sCls=r.status==='resolved'?'accepted':r.status==='cancelled'?'rejected':'pending';
+    const sLbl=r.status==='resolved'?'Completato':r.status==='cancelled'?'Annullato':'In attesa';
+    return`<div class="req-card">
+      <div class="req-card-body">
+        <div class="req-card-title">
+          ${DAYS[r.fromDay]} <span style="color:var(--green)">${SN[r.fromShift]}</span>
+          ↔ ${DAYS[r.wantDay]} <span style="color:var(--red)">${SN[r.wantShift]}</span>
+        </div>
+        <div class="req-card-sub">Sett. ${fmt3(ws)} · Con: ${r.targetColleagues.join(', ')}</div>
+        ${r.winner?`<div class="req-card-sub" style="color:var(--green)">✓ Assegnato a: ${r.winner}</div>`:''}
+        ${r.note?`<div class="req-card-note">"${r.note}"</div>`:''}
+      </div>
+      <div class="req-card-actions">
+        <span class="req-status ${sCls}">${sLbl}</span>
+        ${r.status==='pending'?`<button class="btn btn-ghost btn-sm" onclick="cancelSwap('${r.id}')">Annulla</button>`:''}
+      </div>
+    </div>`;
+  }).join('');
+}
+window.cancelSwap=function(id){ const r=swapStore.find(x=>x.id===id); if(r) r.status='cancelled'; saveSwaps(); render(); };
+
+function renderReceived(){
+  const recv=swapStore.filter(r=>r.targetColleagues?.includes(myEmp)&&r.responses?.[myEmp]==='pending'&&r.status==='pending');
+  if(!recv.length) return`<div style="color:var(--text3);font-size:0.85rem;padding:1rem 0">Nessuna richiesta da rispondere.</div>`;
+  return recv.map(r=>{
+    const ws=weekStart(r.weekOffset);
+    const dtF=new Date(ws);dtF.setDate(ws.getDate()+r.fromDay);
+    const dtW=new Date(ws);dtW.setDate(ws.getDate()+r.wantDay);
+    return`<div class="req-card">
+      <div class="req-card-body">
+        <div class="req-card-title">${r.fromEmp} ti chiede un cambio</div>
+        <div class="req-card-sub">Lui cede: <strong style="color:var(--green)">${DAYS[r.fromDay]} ${fmt2(dtF)} — ${SN[r.fromShift]}</strong></div>
+        <div class="req-card-sub">Tu daresti: <strong style="color:var(--red)">${DAYS[r.wantDay]} ${fmt2(dtW)} — ${SN[r.wantShift]}</strong></div>
+        ${r.note?`<div class="req-card-note">💬 "${r.note}"</div>`:''}
+        <div class="req-card-sub">Richiesta anche a: ${r.targetColleagues.filter(e=>e!==myEmp).join(', ')||'solo te'}</div>
+      </div>
+      <div class="req-card-actions">
+        <button class="btn btn-green btn-sm" onclick="respondSwap('${r.id}','${myEmp}','accepted')">✓ Accetta</button>
+        <button class="btn btn-red btn-sm" onclick="respondSwap('${r.id}','${myEmp}','rejected')">✕ Rifiuta</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+window.respondSwap=function(id,myEmp,answer){
+  const r=swapStore.find(x=>x.id===id); if(!r||r.status!=='pending') return;
+  r.responses[myEmp]=answer;
+  const acceptors=Object.entries(r.responses).filter(([,v])=>v==='accepted').map(([k])=>k);
+  const allAnswered=Object.values(r.responses).every(v=>v!=='pending');
+  if(acceptors.length>0){
+    const k=r.weekKeyStr; const sched=schedStore[k]?.schedule;
+    let winner=acceptors[0];
+    if(sched&&acceptors.length>1){
+      let minWork=999; acceptors.forEach(emp=>{ const worked=(sched[emp]||[]).filter(s=>s&&s!=='O').length; if(worked<minWork){minWork=worked;winner=emp;} });
+    }
+    r.winner=winner; r.status='resolved';
+    if(sched){ const tmp=sched[r.fromEmp][r.fromDay]; sched[r.fromEmp][r.fromDay]=sched[winner][r.wantDay]; sched[winner][r.wantDay]=tmp; saveSched(); }
+    acceptors.filter(e=>e!==winner).forEach(e=>{r.responses[e]='rejected_auto';});
+  }
+  if(allAnswered&&!acceptors.length) r.status='cancelled';
+  saveSwaps(); if(_fbReady) fbSaveSwap(r).catch(console.error); tab='received'; render();
+};
+
+function renderOwner(){
+  const EMP_TO_UID2=EMP_TO_UID;
+  let h=`<div class="page-title">Cambi Turno</div><div class="page-sub">Panoramica completa</div>`;
+  h+=`<div class="card"><div class="card-title">Statistiche per dipendente</div>
+    <div style="overflow-x:auto"><table class="owner-stat-table">
+      <thead><tr><th>Dipendente</th><th>Inviate</th><th>Completate</th><th>Ann.</th><th>Vinte</th><th>Tasso</th></tr></thead><tbody>`;
+  EMPLOYEES.forEach(emp=>{
+    const euid=EMP_TO_UID2[emp];
+    const sent=swapStore.filter(r=>r.fromUid===euid);
+    const res=sent.filter(r=>r.status==='resolved').length;
+    const can=sent.filter(r=>r.status==='cancelled').length;
+    const won=swapStore.filter(r=>r.winner===emp).length;
+    const total=sent.length, rate=total>0?Math.round(res/total*100):0;
+    h+=`<tr><td style="font-weight:600">${emp}</td><td>${total}</td><td style="color:var(--green);font-weight:600">${res}</td><td style="color:var(--red);font-weight:600">${can}</td><td style="color:var(--amber);font-weight:600">${won}</td>
+      <td style="min-width:90px">${total>0?`<div style="font-size:0.72rem;font-weight:600">${rate}%</div><div class="mini-bar"><div class="mini-bar-fill" style="width:${rate}%"></div></div>`:'—'}</td></tr>`;
+  });
+  h+=`</tbody></table></div></div>`;
+  h+=`<div class="sh"><span class="sh-title">Tutte le richieste (${swapStore.length})</span></div>`;
+  if(!swapStore.length) h+=`<div style="color:var(--text3);font-size:0.85rem">Nessuna.</div>`;
+  else h+=swapStore.map(r=>{
+    const ws=weekStart(r.weekOffset);const sCls=r.status==='resolved'?'accepted':r.status==='cancelled'?'rejected':'pending';
+    return`<div class="req-card">
+      <div class="req-card-body">
+        <div class="req-card-title">${r.fromEmp}: ${DAYS[r.fromDay]} ${SN[r.fromShift]} ↔ ${DAYS[r.wantDay]} ${SN[r.wantShift]}</div>
+        <div class="req-card-sub">Con: ${r.targetColleagues.join(', ')} · Sett. ${fmt3(ws)}</div>
+        ${r.winner?`<div class="req-card-sub" style="color:var(--green)">Assegnato a: ${r.winner}</div>`:''}
+      </div>
+      <div class="req-card-actions">
+        <span class="req-status ${sCls}">${r.status==='resolved'?'Fatto':r.status==='cancelled'?'Ann.':'Attesa'}</span>
+        <button class="btn btn-ghost btn-sm" onclick="del('${r.id}')">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+  document.getElementById('main').innerHTML=h;
+}
+window.del=function(id){ swapStore=swapStore.filter(r=>r.id!==id); saveSwaps(); renderOwner(); };
+window.addEventListener('fb-ready', function() {
+  fbInit(()=>{ markFbReady(); render(); fbListenSwaps(render); });
+}, { once: true });
+</script>
+</body>
+</html>

@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Turni — Home</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app-layout">
+  <div id="sidebar-mount"></div>
+  <main class="main-area" id="main"></main>
+</div>
+<!-- App core (classic script, defines globals) -->
+<script src="app.js"></script>
+<!-- Firebase (ES module, imports SDK v12 and exports to window.*) -->
+<script type="module" src="firebase.js"></script>
+<script>
+const user = requireAuth();
+if(!user) throw 0;
+document.getElementById('sidebar-mount').innerHTML = buildSidebar('home', user);
+
+const isOwner = user.role==='owner';
+const myEmp = isOwner ? null : UID_TO_EMP[user.uid];
+let weekOff = 0;
+
+function render(){
+  const res = getOrGen(weekOff);
+  const ws = weekStart(weekOff);
+  const todayD = todayDate();
+  const tomorrowD = new Date(todayD); tomorrowD.setDate(todayD.getDate()+1);
+  const tOff = offsetForDate(tomorrowD);
+  const tRes = getOrGen(tOff);
+  const tWs = weekStart(tOff);
+  const tDayIdx = Math.round((tomorrowD-tWs)/86400000);
+
+  let h = `<div class="page-title">Ciao, ${user.displayName} 👋</div>
+  <div class="page-sub">${todayD.toLocaleDateString('it-IT',{weekday:'long',day:'numeric',month:'long'})}</div>`;
+
+  // Tomorrow card
+  if(!isOwner && tRes.schedule){
+    const code = tRes.schedule[myEmp]?.[tDayIdx];
+    const shiftName = SN[code]||'—';
+    const icon = (code==='M'||code==='SAT-M')?'🌅':(code==='S'||code==='SAT-S')?'🌆':'🌿';
+    const bCls = (code==='M'||code==='SAT-M')?'tc-shift-badge-M':(code==='S'||code==='SAT-S')?'tc-shift-badge-S':'tc-shift-badge-O';
+    h+=`<div class="tomorrow-card">
+      <div>
+        <div class="tc-label">Domani — ${tomorrowD.toLocaleDateString('it-IT',{weekday:'long',day:'numeric',month:'long'})}</div>
+        <div class="tc-shift"><span class="${bCls}">${shiftName}</span></div>
+        ${SL[code]?`<div class="tc-time">${SL[code]}</div>`:''}
+      </div>
+      <div class="tc-icon">${icon}</div>
+    </div>`;
+  } else if(isOwner && tRes.schedule){
+    const MK=tDayIdx===5?'SAT-M':'M', SK=tDayIdx===5?'SAT-S':'S';
+    const inM=EMPLOYEES.filter(e=>tRes.schedule[e][tDayIdx]===MK);
+    const inS=EMPLOYEES.filter(e=>tRes.schedule[e][tDayIdx]===SK);
+    const off=EMPLOYEES.filter(e=>tRes.schedule[e][tDayIdx]==='O');
+    h+=`<div class="card"><div class="card-title">Domani — ${tomorrowD.toLocaleDateString('it-IT',{weekday:'long',day:'numeric',month:'long'})}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.75rem">
+        <div><div style="font-size:0.68rem;font-weight:700;color:var(--green);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.4rem">Mattina (${inM.length})</div>${inM.map(e=>`<div style="font-size:0.8rem;padding:0.15rem 0">${e}</div>`).join('')||'—'}</div>
+        <div><div style="font-size:0.68rem;font-weight:700;color:var(--red);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.4rem">Sera (${inS.length})</div>${inS.map(e=>`<div style="font-size:0.8rem;padding:0.15rem 0">${e}</div>`).join('')||'—'}</div>
+        <div><div style="font-size:0.68rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.4rem">Libero (${off.length})</div>${off.map(e=>`<div style="font-size:0.8rem;padding:0.15rem 0;color:var(--text3)">${e}</div>`).join('')||'—'}</div>
+      </div></div>`;
+  }
+
+  // Week strip
+  h+=`<div class="sh">
+    <span class="sh-title">Settimana</span>
+    <div style="display:flex;gap:0.5rem;align-items:center">
+      ${weekNavHtml()}
+    </div>
+  </div>`;
+
+  if(res.schedule){
+    if(!isOwner){
+      const sh=res.schedule[myEmp];
+      const mC=sh.filter(s=>s==='M'||s==='SAT-M').length;
+      const sC=sh.filter(s=>s==='S'||s==='SAT-S').length;
+      const oC=sh.filter(s=>s==='O').length;
+      h+=`<div class="stat-grid stat-grid-4" style="margin-bottom:1rem">
+        <div class="stat-box"><div class="stat-val green">${mC}</div><div class="stat-lbl">Mattina</div></div>
+        <div class="stat-box"><div class="stat-val red">${sC}</div><div class="stat-lbl">Sera</div></div>
+        <div class="stat-box"><div class="stat-val">${mC+sC}</div><div class="stat-lbl">Lavorati</div></div>
+        <div class="stat-box"><div class="stat-val amber">${oC}</div><div class="stat-lbl">Libero</div></div>
+      </div>
+      <div class="card"><div class="card-title">I tuoi turni</div><div class="day-strip">`;
+      DAYS.forEach((day,d)=>{
+        const code=sh[d]; const dt=new Date(ws); dt.setDate(ws.getDate()+d);
+        const isToday=dt.getTime()===todayD.getTime();
+        const cls=code==='O'&&d===6?'OFF-SUN':(code||'OFF');
+        h+=`<div class="day-box${isToday?' today':''}">
+          <div class="day-name" style="${d===5?'color:var(--sat)':d===6?'color:var(--amber)':''}">${day}</div>
+          <div class="day-date">${fmt2(dt)}</div>
+          <div class="day-shift ${cls}">${pillShort(code)}</div>
+          <div class="day-time">${SL[code]||''}</div>
+        </div>`;
+      });
+      h+=`</div></div>`;
+    } else {
+      // Owner: compact table
+      h+=`<div class="table-wrap"><table><thead><tr><th>Dipendente</th>`;
+      for(let d=0;d<7;d++){ const dt=new Date(ws); dt.setDate(ws.getDate()+d); h+=`<th class="${d===5?'cs':d===6?'cd':''}">${DAYS[d]}<br><span style="font-size:0.55rem;opacity:0.6">${fmt2(dt)}</span></th>`; }
+      h+=`</tr></thead><tbody>`;
+      EMPLOYEES.forEach(emp=>{
+        h+=`<tr><td>${emp}</td>`;
+        for(let d=0;d<7;d++){ const code=res.schedule[emp][d]; h+=`<td><span class="${pillCls(code,d)}">${pillShort(code)}</span></td>`; }
+        h+=`</tr>`;
+      });
+      h+=`</tbody></table></div>`;
+    }
+  }
+
+  document.getElementById('main').innerHTML=h;
+  attachWeekNav(()=>weekOff, v=>{ weekOff=v; }, render);
+}
+
+window.addEventListener('fb-ready', function() {
+  fbInit(()=>{ markFbReady(); render(); fbListenSwaps(()=>{ if(document.getElementById('main')) {} }); });
+}, { once: true });
+</script>
+</body>
+</html>

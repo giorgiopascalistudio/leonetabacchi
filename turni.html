@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Turni — Calendario Turni</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app-layout">
+  <div id="sidebar-mount"></div>
+  <main class="main-area" id="main"></main>
+</div>
+
+<div class="overlay" id="modal-overlay">
+  <div class="modal">
+    <h3 id="modal-title">Modifica turno</h3>
+    <div class="shift-opts" id="modal-opts"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost btn-sm" onclick="document.getElementById('modal-overlay').classList.remove('open')">Annulla</button>
+      <button class="btn btn-green btn-sm" id="modal-save">Salva</button>
+    </div>
+  </div>
+</div>
+
+<!-- App core (classic script, defines globals) -->
+<script src="app.js"></script>
+<!-- Firebase (ES module, imports SDK v12 and exports to window.*) -->
+<script type="module" src="firebase.js"></script>
+<script>
+const user = requireAuth();
+if(!user) throw 0;
+document.getElementById('sidebar-mount').innerHTML = buildSidebar('turni', user);
+
+const isOwner = user.role==='owner';
+const myEmp = isOwner ? null : UID_TO_EMP[user.uid];
+let weekOff = 0;
+let modalEmp=null, modalDay=null, modalVal=null;
+
+function render(){
+  const res = getOrGen(weekOff);
+  const ws = weekStart(weekOff);
+  let h=`<div class="page-title">Turni</div>
+  <div class="sh">
+    ${weekNavHtml()}
+    <div class="sh-actions">`;
+  if(isOwner){
+    h+=`<button class="btn btn-ghost btn-sm" onclick="doCopy()">⊡ Copia</button>
+        <button class="btn btn-ghost btn-sm" onclick="doGen2M()">Genera 2 mesi</button>
+        <button class="btn btn-red btn-sm" onclick="doRegen()">↻ Rigenera</button>`;
+  }
+  h+=`</div></div>`;
+
+  if(res.valid){
+    h+=`<div class="notice notice-ok"><div class="notice-dot"></div>Turni validi.</div>`;
+  } else {
+    h+=`<div class="notice notice-err"><div class="notice-dot"></div>${(res.errors||[]).join(' · ')}</div>`;
+  }
+
+  if(!res.schedule){
+    document.getElementById('main').innerHTML=h; attachWeekNav(()=>weekOff,v=>{weekOff=v;},render); return;
+  }
+
+  h+=`<div class="table-wrap"><table><thead><tr><th>Dipendente</th>`;
+  for(let d=0;d<7;d++){
+    const dt=new Date(ws); dt.setDate(ws.getDate()+d);
+    h+=`<th class="${d===5?'cs':d===6?'cd':''}">${DAYS[d]}<br><span style="font-size:0.55rem;opacity:0.6">${fmt2(dt)}</span></th>`;
+  }
+  h+=`</tr><tr class="subrow"><td>M / S</td>`;
+  for(let d=0;d<7;d++){
+    const sat=d===5, MK=sat?'SAT-M':'M', SK=sat?'SAT-S':'S';
+    const mc=EMPLOYEES.filter(e=>res.schedule[e][d]===MK).length;
+    const sc=EMPLOYEES.filter(e=>res.schedule[e][d]===SK).length;
+    h+=`<td style="${mc===0||sc===0?'color:var(--red);font-weight:600':''}">${mc}M·${sc}S</td>`;
+  }
+  h+=`</tr></thead><tbody>`;
+
+  EMPLOYEES.forEach(emp=>{
+    const isMe=!isOwner&&emp===myEmp;
+    h+=`<tr class="${isMe?'me-row':''}"><td>${emp}${isMe?' <span style="font-size:0.62rem;color:var(--green);font-weight:700">← tu</span>':''}</td>`;
+    for(let d=0;d<7;d++){
+      const code=res.schedule[emp][d];
+      const cls=pillCls(code,d);
+      const lbl=pillLabel(code);
+      if(isOwner){
+        h+=`<td><span class="${cls} pill-edit" onclick="openModal('${emp}',${d},'${code}')">
+          ${lbl}<br><span style="font-size:0.52rem;opacity:0.7">${SL[code]||''}</span>
+        </span></td>`;
+      } else {
+        h+=`<td><span class="${cls}">${lbl}<br><span style="font-size:0.52rem;opacity:0.7">${SL[code]||''}</span></span></td>`;
+      }
+    }
+    h+=`</tr>`;
+  });
+  h+=`</tbody></table></div>`;
+
+  if(isOwner){
+    h+=`<div class="sh" style="margin-top:1.5rem"><span class="sh-title">Riepilogo dipendenti</span></div>
+    <div class="emp-grid">`;
+    EMPLOYEES.forEach(emp=>{
+      const sh=res.schedule[emp];
+      const mC=sh.filter(s=>s==='M'||s==='SAT-M').length;
+      const sC=sh.filter(s=>s==='S'||s==='SAT-S').length;
+      const oC=sh.filter(s=>s==='O').length;
+      h+=`<div class="emp-card"><div class="emp-card-name">${emp}</div>
+        <div class="emp-card-stats">
+          <div class="emp-stat"><b class="g">${mC}</b> mat.</div>
+          <div class="emp-stat"><b class="r">${sC}</b> sera</div>
+          <div class="emp-stat"><b>${oC}</b> lib.</div>
+        </div></div>`;
+    });
+    h+=`</div>`;
+  }
+
+  document.getElementById('main').innerHTML=h;
+  attachWeekNav(()=>weekOff, v=>{weekOff=v;}, render);
+}
+
+function openModal(emp,day,code){
+  modalEmp=emp; modalDay=+day; modalVal=code;
+  const sat=+day===5;
+  document.getElementById('modal-title').textContent=`${emp} · ${DAYS[day]}`;
+  const opts=sat?[['SAT-M','Mattina · 07:00–14:30'],['SAT-S','Sera · 14:30–21:30']]
+    :[['M','Mattina · 07:00–14:30'],['S','Sera · 14:30–21:30'],['O','Libero']];
+  document.getElementById('modal-opts').innerHTML=opts.map(([c,l],i)=>
+    `<button class="shift-opt${code===c?' sel-'+c:''}" onclick="selOpt('${c}',${i})">${l}</button>`
+  ).join('');
+  document.getElementById('modal-overlay').classList.add('open');
+}
+window.openModal=openModal;
+window.selOpt=function(code,idx){
+  modalVal=code;
+  document.querySelectorAll('.shift-opt').forEach((el,i)=>{ el.className='shift-opt'+(i===idx?' sel-'+code:''); });
+};
+document.getElementById('modal-save').onclick=function(){
+  if(!modalEmp||modalDay===null||!modalVal) return;
+  const k=weekKey(weekOff);
+  if(schedStore[k]?.schedule){
+    schedStore[k].schedule[modalEmp][modalDay]=modalVal;
+    const errs=valSched(schedStore[k].schedule,schedStore[k].sunOffEmp);
+    schedStore[k].errors=errs; schedStore[k].valid=!errs.length;
+    saveSched(); if(_fbReady) fbSaveWeek(k, schedStore[k]).then(()=>showFbSuccess()).catch(console.error);
+  }
+  document.getElementById('modal-overlay').classList.remove('open');
+  render();
+};
+document.getElementById('modal-overlay').addEventListener('click',function(e){ if(e.target===this) this.classList.remove('open'); });
+
+window.doRegen=function(){
+  const k=weekKey(weekOff); delete schedStore[k];
+  schedStore[k]=genWeek(weekOff*1009+(Date.now()%99991),weekOff);
+  saveSched(); if(_fbReady) fbSaveSchedules().then(()=>showFbSuccess('Turni salvati')).catch(console.error); render();
+};
+window.doGen2M=function(){ genTwoMonths(weekOff); alert('Turni generati per le prossime ~9 settimane!'); render(); };
+window.doCopy=function(){
+  const res=schedStore[weekKey(weekOff)]; if(!res?.schedule) return;
+  const ws=weekStart(weekOff), we=new Date(ws); we.setDate(ws.getDate()+6);
+  let txt=`TURNI ${fmt3(ws)} - ${fmt3(we)}\n${'─'.repeat(70)}\n`;
+  EMPLOYEES.forEach(emp=>{ txt+=`\n${emp.padEnd(13)}`; res.schedule[emp].forEach((s,i)=>{ txt+=`  ${DAYS[i]}: ${(SL[s]||'Libero').padEnd(12)}`; }); });
+  navigator.clipboard.writeText(txt);
+};
+
+window.addEventListener('fb-ready', function() {
+  fbInit(()=>{ markFbReady(); render(); fbListenSchedule(weekKey(weekOff), render); });
+}, { once: true });
+</script>
+</body>
+</html>
